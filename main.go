@@ -12,6 +12,8 @@ import (
   "golang.org/x/oauth2/google"
   "google.golang.org/api/drive/v3"
   "google.golang.org/api/option"
+
+  "errors"
 );
 
 func getClient(config *oauth2.Config) *http.Client { //U: Retrieve a token, saves the token, then returns the generated client.
@@ -68,6 +70,21 @@ func saveToken(path string, token *oauth2.Token) { //U: Saves a token to a file 
   json.NewEncoder(f).Encode(token);
 }
 
+func uploadFile(localPath string, drivePath string, service *drive.Service) error { //U: Uploads a local file to Drive
+  file, err := os.Open(localPath);
+  if err != nil {
+    log.Printf("[uploadFile] Error opening \"%v\": %v", localPath, err);
+    return errors.New(fmt.Sprintf("Couldn't open \"%v\"", localPath));
+  }
+
+  _, err = service.Files.Create(&drive.File{Name: drivePath}).Media(file).Do();
+  if err != nil {
+    log.Printf("[uploadFile] Unable to create \"%v\": %v", drivePath, err);
+  }
+
+  return nil;
+}
+
 func main() {
   ctx := context.Background();
   b, err := os.ReadFile("credentials.json");
@@ -87,6 +104,11 @@ func main() {
     log.Fatalf("[main] Unable to retrieve Drive client: %v", err);
   }
 
+  err = uploadFile("test", "test", srv);
+  if err != nil {
+    log.Fatalf("[main] Unable to upload file: %v", err);
+  }
+  
   r, err := srv.Files.List().PageSize(10).
               Fields("nextPageToken, files(id, name)").Do();
   if err != nil {
