@@ -14,6 +14,8 @@ import (
   "google.golang.org/api/option"
 
   "errors"
+  "io"
+  //"strings"
 );
 
 func getClient(config *oauth2.Config) *http.Client { //U: Retrieve a token, saves the token, then returns the generated client.
@@ -70,6 +72,54 @@ func saveToken(path string, token *oauth2.Token) { //U: Saves a token to a file 
   json.NewEncoder(f).Encode(token);
 }
 
+func getFileId(drivePath string, service *drive.Service) (string, error) {
+  //r, err := service.Files.List().PageSize(10).Fields("nextPageToken, files(id, name)").Do();
+  r, err := service.Files.List().Q(fmt.Sprintf("name = '%v' and 'root' in parents and trashed = false", drivePath)).Do(); //TODO: Check format string
+  if err != nil {
+    log.Printf("[getFileId] Unable to retrieve files: %v", err);
+    return "", errors.New("Unable to retrieve files");
+  }
+
+  if len(r.Files) == 1 { //TODO: Handle multiple files with the same name
+    return r.Files[0].Id, nil; 
+  }
+
+  return "", errors.New("File not found");
+  //TODO: Directories
+  //TODO: Cache
+}
+
+func downloadFile(localPath string, drivePath string, service *drive.Service) error {
+  fid, err := getFileId(drivePath, service);
+  if err != nil {
+    log.Printf("[downloadFile] Unable to get file ID for \"%v\": %v", drivePath, err);
+    return err;
+  }
+  
+  r, err := service.Files.Get(fid).Download();
+  if err != nil {
+    log.Printf("[downloadFile] Unable to get file \"%v\" with id %v: %v", drivePath, err);
+    return err;
+  }
+  defer r.Body.Close();
+
+  if r.StatusCode == http.StatusOK {
+    bodyBytes, err := io.ReadAll(r.Body);
+    if err != nil {
+      log.Printf("[downloadFile] Error reading file \"%v\": %v", drivePath, err);
+      return err;
+    }
+    err = os.WriteFile(localPath, bodyBytes, 0644);
+    if err != nil {
+      log.Printf("[downloadFile] Error writing file \"%v\": %v", drivePath, err);
+      return err;
+    }
+  }
+
+  return nil;
+  //TODO: Simpler?
+}
+
 func uploadFile(localPath string, drivePath string, service *drive.Service) error { //U: Uploads a local file to Drive
   file, err := os.Open(localPath);
   if err != nil {
@@ -99,29 +149,24 @@ func main() {
   }
   client := getClient(config);
 
-  srv, err := drive.NewService(ctx, option.WithHTTPClient(client));
+  service, err := drive.NewService(ctx, option.WithHTTPClient(client));
   if err != nil {
     log.Fatalf("[main] Unable to retrieve Drive client: %v", err);
   }
 
-  err = uploadFile("test", "test", srv);
+  localPath, drivePath := "test", "test";
+
+  err = downloadFile(localPath, drivePath, service);
+  if err != nil {
+    log.Fatalf("[main] Unable to download file: %v", err);
+  }
+
+  /*
+  err = uploadFile("test", "test", service);
   if err != nil {
     log.Fatalf("[main] Unable to upload file: %v", err);
   }
-  
-  r, err := srv.Files.List().PageSize(10).
-              Fields("nextPageToken, files(id, name)").Do();
-  if err != nil {
-    log.Fatalf("[main] Unable to retrieve files: %v", err);
-  }
-  fmt.Println("Files:");
-  if len(r.Files) == 0 {
-    fmt.Println("No files found.");
-  } else {
-    for _, i := range r.Files {
-      fmt.Printf("%s (%s)\n", i.Name, i.Id);
-    }
-  }
+  */
 }
 
 //TODO: Log vs user print
