@@ -13,10 +13,14 @@ import (
   "google.golang.org/api/drive/v3"
   "google.golang.org/api/option"
 
-  "errors"
   "io"
-  //"strings"
+  "errors"
+  "time"
 );
+
+type Config struct {
+  Files [][]string
+};
 
 func getClient(config *oauth2.Config) *http.Client { //U: Retrieve a token, saves the token, then returns the generated client.
   /* NOTE:
@@ -72,31 +76,30 @@ func saveToken(path string, token *oauth2.Token) { //U: Saves a token to a file 
   json.NewEncoder(f).Encode(token);
 }
 
-func getFileId(drivePath string, service *drive.Service) (string, error) {
+func getFile(drivePath string, service *drive.Service) (drive.File, error) {
   //r, err := service.Files.List().PageSize(10).Fields("nextPageToken, files(id, name)").Do();
-  r, err := service.Files.List().Q(fmt.Sprintf("name = '%v' and 'root' in parents and trashed = false", drivePath)).Do(); //TODO: Check format string
+  r, err := service.Files.List().Fields("files").Q(fmt.Sprintf("name = '%v' and 'root' in parents and trashed = false", drivePath)).Do(); //TODO: Check format string
   if err != nil {
     log.Printf("[getFileId] Unable to retrieve files: %v", err);
-    return "", errors.New("Unable to retrieve files");
+    return drive.File{}, errors.New("Unable to retrieve files");
   }
 
   if len(r.Files) == 1 { //TODO: Handle multiple files with the same name
-    return r.Files[0].Id, nil; 
+    return *r.Files[0], nil; 
   }
 
-  return "", errors.New("File not found");
-  //TODO: Directories
+  return drive.File{}, errors.New("File not found");
   //TODO: Cache
 }
 
 func downloadFile(localPath string, drivePath string, service *drive.Service) error {
-  fid, err := getFileId(drivePath, service);
+  file, err := getFile(drivePath, service);
   if err != nil {
     log.Printf("[downloadFile] Unable to get file ID for \"%v\": %v", drivePath, err);
     return err;
   }
   
-  r, err := service.Files.Get(fid).Download();
+  r, err := service.Files.Get(file.Id).Download();
   if err != nil {
     log.Printf("[downloadFile] Unable to get file \"%v\" with id %v: %v", drivePath, err);
     return err;
@@ -126,10 +129,76 @@ func uploadFile(localPath string, drivePath string, service *drive.Service) erro
     log.Printf("[uploadFile] Error opening \"%v\": %v", localPath, err);
     return errors.New(fmt.Sprintf("Couldn't open \"%v\"", localPath));
   }
+  defer file.Close(); //TODO: https://gobyexample.com/defer
 
   _, err = service.Files.Create(&drive.File{Name: drivePath}).Media(file).Do();
   if err != nil {
     log.Printf("[uploadFile] Unable to create \"%v\": %v", drivePath, err);
+  }
+
+  return nil;
+}
+
+func syncFile(localPath string, drivePath string, service *drive.Service) error {
+  log.Printf("[syncFile] localPath=\"%v\", drivePath=\"%v\"", localPath, drivePath);
+
+  //A: Get local file and its date
+  localFile, err := os.Stat(localPath);
+  if err != nil {
+    log.Printf("[syncFile] Error on getting local: %v", err);
+    return err;
+    //TODO: Error may mean it doesn't exist and we might want to download it
+  }
+  localDate := localFile.ModTime();
+
+  //A: Get remote file and its date
+  remoteFile, err := getFile(drivePath, service);
+  if err != nil {
+    log.Printf("[syncFile] Error on getting remote: %v", err);
+    return err;
+    //TODO: Error may mean it doesn't exist and we might want to upload
+  }
+  remoteDate, err := time.Parse(time.RFC3339, remoteFile.ModifiedTime);
+  if err != nil {
+    log.Printf("[syncFile] Error parsing remote time: %v", err);
+    return err;
+  }
+
+  //TODO: Compare hashes
+
+  if localDate.After(remoteDate) {
+    return uploadFile(localPath, drivePath, service);
+    //TODO: Replace rather than uploading
+  } else if localDate.Before(remoteDate) {
+    return downloadFile(localPath, drivePath, service);
+  }
+
+  //TODO: Config replacement policy / Force either
+
+  return nil;
+}
+
+func syncAll(service *drive.Service) error {
+  log.Print("[syncAll]");
+
+  content, err := os.ReadFile("./config.json");
+  if err != nil {
+    log.Printf("[syncAll] Error reading config: %v", err);
+    return errors.New("Error reading config");
+  }
+
+  var config Config;
+  err = json.Unmarshal(content, &config);
+  if err != nil {
+    log.Printf("[syncAll] Error parsing config: %v", err);
+    return errors.New("Error parsing config");
+  }
+
+  for _, file := range config.Files {
+    err = syncFile(file[0], file[1], service);
+    if err != nil {
+      //TODO: Retry
+    }
   }
 
   return nil;
@@ -154,12 +223,19 @@ func main() {
     log.Fatalf("[main] Unable to retrieve Drive client: %v", err);
   }
 
-  localPath, drivePath := "test", "test";
+  err = syncAll(service);
+  if err != nil {
+    log.Fatalf("[main] Error syncing: %v", err);
+  }
 
+  //localPath, drivePath := "test", "test";
+
+  /*
   err = downloadFile(localPath, drivePath, service);
   if err != nil {
     log.Fatalf("[main] Unable to download file: %v", err);
   }
+  */
 
   /*
   err = uploadFile("test", "test", service);
@@ -170,3 +246,4 @@ func main() {
 }
 
 //TODO: Log vs user print
+//TODO: Directories
